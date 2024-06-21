@@ -3,6 +3,7 @@ from groq import Groq
 import json
 import os
 from io import BytesIO
+import requests
 from md2pdf.core import md2pdf
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", None)
@@ -20,7 +21,7 @@ st.set_page_config(
 )
 
 class GenerationStatistics:
-    def __init__(self, input_time=0,output_time=0,input_tokens=0,output_tokens=0,total_time=0,model_name="llama3-8b-8192"):
+    def __init__(self, input_time=0, output_time=0, input_tokens=0, output_tokens=0, total_time=0, model_name="llama3-8b-8192"):
         self.input_time = input_time
         self.output_time = output_time
         self.input_tokens = input_tokens
@@ -267,6 +268,39 @@ def enable():
 def empty_st():
     st.empty()
 
+def get_audio_url_from_video(video_url):
+    """
+    Get audio URL from the video URL using a third-party API.
+    """
+    api_url = "https://auto-download-all-in-one.p.rapidapi.com/v1/social/autolink"
+    payload = {"url": video_url}
+    headers = {
+        "x-rapidapi-key": "80cc8737f5msh80bae2219fffff9p18080bjsn1212122c134084e0035",
+        "x-rapidapi-host": "auto-download-all-in-one.p.rapidapi.com",
+        "Content-Type": "application/json"
+    }
+    
+    response = requests.post(api_url, json=payload, headers=headers)
+    if response.status_code == 200:
+        medias = response.json().get("medias", [])
+        audio_url = next((media["url"] for media in medias if media["type"] == "audio"), None)
+        if not audio_url:
+            raise ValueError("No audio URL found in the response")
+        return audio_url
+    else:
+        raise ValueError("Failed to get audio URL from video URL")
+
+def download_audio(audio_url):
+    """
+    Download audio from the provided URL and save it as a file.
+    """
+    response = requests.get(audio_url)
+    if response.status_code == 200:
+        audio_file = BytesIO(response.content)
+        return audio_file
+    else:
+        raise ValueError("Failed to download audio from URL")
+
 try:
     with st.sidebar:
         audio_files = {
@@ -335,10 +369,8 @@ try:
             raise ValueError("Please generate content first before downloading the notes.")
 
     with st.form("groqform"):
-        if not GROQ_API_KEY:
-            groq_input_key = st.text_input("Enter your Groq API Key (gsk_yA...):", "", type="password")
-
         audio_file = st.file_uploader("Upload an audio file", type=["mp3", "wav", "m4a"]) # TODO: Add a max size
+        video_url = st.text_input("输入视频地址")  # 新增视频地址输入框
 
         # Generate button
         submitted = st.form_submit_button(st.session_state.button_text, on_click=disable, disabled=st.session_state.button_disabled)
@@ -356,26 +388,28 @@ try:
                     placeholder.empty()
 
         if submitted:
-            if audio_file is None:
-                raise ValueError("Please upload an audio file")
+            if audio_file is None and not video_url:
+                raise ValueError("Please upload an audio file or input a video URL")
 
             st.session_state.button_disabled = True
             st.session_state.statistics_text = "Transcribing audio in background...."  # Show temporary message before transcription is generated and statistics show
             display_statistics()
 
-            if not GROQ_API_KEY:
-                st.session_state.groq = Groq(api_key=groq_input_key)
-
-            transcription_text = transcribe_audio(audio_file)
+            if audio_file:
+                transcription_text = transcribe_audio(audio_file)
+            elif video_url:
+                audio_url = get_audio_url_from_video(video_url)
+                audio_file = download_audio(audio_url)
+                transcription_text = transcribe_audio(audio_file)
 
             large_model_generation_statistics, notes_structure = generate_notes_structure(transcription_text)
-            print("Structure: ",notes_structure)
+            print("Structure: ", notes_structure)
 
             total_generation_statistics = GenerationStatistics(model_name="llama3-8b-8192")
 
             try:
                 notes_structure_json = json.loads(notes_structure)
-                notes = NoteSection(structure=notes_structure_json,transcript=transcription_text)
+                notes = NoteSection(structure=notes_structure_json, transcript=transcription_text)
                 
                 if 'notes' not in st.session_state:
                     st.session_state.notes = notes
